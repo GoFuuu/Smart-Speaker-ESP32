@@ -1,13 +1,4 @@
 /*
-  本程序用于测试以太网模块的好坏，同时给买家编程做参考。
-  板子类型：esp32
-  淘宝店铺：https://mtools.taobao.com
-  旺旺：亲亲雨甄
-  ESP32编程环境：版本要2.0以上（2.0以下不工作）
-  开发板：ESP32 Dev Module
-  烧写模式：QIO
-  测试流程：板子已烧写本程序，板子插上正版SD卡，尽量不要太大容量，用typec给板子供电，按下按钮1录音五秒自动停止，再按下按钮2播放。这样就测试了按钮、录音、播放、SD卡储存的功能。
-
  IO标注:
  io13（按钮1），io14（按钮2）
  io2（LED）
@@ -21,6 +12,9 @@
 #include <SdFat.h>
 #include "MyI2S.h"
 #include "wave.h"
+#include <HTTPClient.h>
+
+
 
 SdFs sd;      // sd卡
 FsFile file;  // 录音文件
@@ -51,16 +45,14 @@ int16_t playData[2048];   //发往I2S的缓冲区
 const char *ssid = "二楼";
 const char *password = "1234567890";
 
-// 腾讯云MQTT配置
-const char *tencentCloudBroker = "your_broker_url";
-const int tencentCloudPort = 1883;
-const char *tencentCloudUsername = "your_username";
-const char *tencentCloudPassword = "your_password";
-const char *tencentCloudTopic = "your_topic";
+
+// 服务器配置
+const char *serverUrl = "http://your.server.com/upload";
+
 
 // 其他定义
 WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
+
 void connectToWiFi() {
     Serial.println("Connecting to WiFi...");
     WiFi.begin(ssid, password);
@@ -70,56 +62,47 @@ void connectToWiFi() {
     }
     Serial.println("Connected to WiFi");
 }
-void setup() {
-  Serial.begin(115200);
-  pinMode(PLAY, INPUT_PULLUP);//定义按钮1
-  pinMode(RECORD, INPUT_PULLUP);
-  pinMode(LED,OUTPUT);
-  digitalWrite(LED, HIGH);
-  delay(500);
 
-  // 初始化SD卡
-  if(!sd.begin(SdSpiConfig(5, DEDICATED_SPI, 18000000)))
-  {
-    Serial.println("init sd card error");
-    return;
-  }
-
-  // 初始化WiFi连接
-  connectToWiFi();
-
-  // 初始化MQTT连接
-  mqttClient.setServer(tencentCloudBroker, tencentCloudPort);
-}
-
-
-
-void sendAudioToTencentCloud() {
+String sendAudioToServerAndGetUrl() {
   // 打开音频文件
   file = sd.open(filename, O_READ);
   if (!file) {
     Serial.println("Error opening audio file");
-    return;
+    return "";
   }
 
-  // 连接到腾讯云MQTT
-  if (mqttClient.connect("ESP32Client", tencentCloudUsername, tencentCloudPassword)) {
-    Serial.println("Connected to MQTT broker");
+  // 初始化HTTP客户端
+  HTTPClient http;
 
-    // 发布音频数据到指定主题
-    while (file.available()) {
-      char buffer[128];
-      int bytesRead = file.readBytes(buffer, sizeof(buffer));
-      mqttClient.publish(tencentCloudTopic, buffer, bytesRead);
-      delay(100);  // 延迟确保数据发送完整
+  // 构建HTTP请求
+  http.begin(wifiClient, serverUrl);
+
+  // 发送文件
+  // http.addHeader("Content-Type", "multipart/form-data");
+  // http.addHeader("Content-Disposition", "form-data; name=\"file\"; filename=\"audio.wav\"");
+
+  int bytesRead;
+  uint8_t buffer[128];
+
+  while (file.available()) {
+    bytesRead = file.readBytes((char*)buffer, sizeof(buffer));
+
+    if (bytesRead > 0) {
+      http.POST(buffer, bytesRead);
     }
 
-    // 关闭音频文件
-    file.close();
-  } else {
-    Serial.println("MQTT connection failed");
+    delay(100);  // 延迟确保数据发送完整
   }
+
+  // 关闭文件和HTTP连接
+  file.close();
+  http.end();
+
+  // 返回从服务器获取的音频文件 URL
+  return http.getString();
 }
+
+
 
 void play()
 {
@@ -206,12 +189,36 @@ void record()
   ESP.restart();//重启
 }
 
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PLAY, INPUT_PULLUP);//定义按钮1
+  pinMode(RECORD, INPUT_PULLUP);
+  pinMode(LED,OUTPUT);
+  digitalWrite(LED, HIGH);
+  delay(500);
+
+  // 初始化SD卡
+  if(!sd.begin(SdSpiConfig(5, DEDICATED_SPI, 18000000)))
+  {
+    Serial.println("init sd card error");
+    return;
+  }
+
+  // 初始化WiFi连接
+  connectToWiFi();
+
+}
+
+
 void loop() {
   if (!digitalRead(PLAY)) {
     delay(5);//防抖
     if (!digitalRead(PLAY)) 
     {
         if (key1 == 0) {
+          
+          String audioUrl = sendAudioToServerAndGetUrl(); // 发送音频到服务器并获取URL
           play();
           key1 = 1;
         }
@@ -240,16 +247,6 @@ void loop() {
     key2=0;  
   }
 
-  //dealMqtt();
 
 }
-void dealMqtt()
-{
-  // 处理MQTT消息
-  if (mqttClient.connected()) {
-    mqttClient.loop();
-  } else {
-  // 如果连接断开，尝试重新连接
-    mqttClient.connect("ESP32Client", tencentCloudUsername, tencentCloudPassword);
-  }
-}
+
