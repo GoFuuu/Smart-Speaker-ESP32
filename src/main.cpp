@@ -26,7 +26,9 @@ FsFile file;  // 录音文件
 #define PLAY 13
 #define RECORD 14
 #define LED 2
-
+#define ICS_SCK 4
+#define ICS_WS 22
+#define ICS_SD 34
 // 判断按钮是否被按过
 int key1 = 0;
 int key2 = 0;
@@ -36,6 +38,7 @@ const char filename[] = "/my.wav";
 
 
 const int record_time = 5;  // second录音5秒
+//每秒的数据量就是 1（通道）* 44100 采样率（样本/秒）* 2（16位）（字节/样本）= 88200 字节/秒
 const int waveDataSize = record_time * 88200;
 int32_t communicationData[1024];     //接收缓冲区
 char partWavData[1024];
@@ -52,10 +55,17 @@ const char *password = "1234567890";
 
 // 服务器配置
 const char *serverUrl = "http://139.155.158.174:8001/api/audio/";
-
-
+const char* mqtt_server = "139.155.158.174";
+unsigned int mqtt_port = 1883;
+const char *mqtt_user = "ubuntu";
+const char *mqtt_password = "1";
 // 其他定义
 WiFiClient wifiClient;
+PubSubClient client(wifiClient);
+unsigned long lastMsg = 0;
+#define MSG_BUFFER_SIZE	(50)
+char msg[MSG_BUFFER_SIZE];
+int value = 0;
 
 void connectToWiFi() {
     Serial.println(ssid);
@@ -126,7 +136,7 @@ void record()
   header.dataSize = waveDataSize;
   file.write(&header, 44);
 
-  if(!mi.InitInput(I2S_BITS_PER_SAMPLE_32BIT, 4, 22, 34))
+  if(!mi.InitInput(I2S_BITS_PER_SAMPLE_32BIT, ICS_SCK, ICS_WS, ICS_SD))
   {
     Serial.println("init i2s error");
     return;
@@ -225,7 +235,25 @@ if (httpCode > 0) {
 http.end();
 }
 
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
 
+  // Switch on the LED if an 1 was received as first character
+  if ((char)payload[0] == '1') {
+    digitalWrite(LED, LOW);   // Turn the LED on (Note that LOW is the voltage level
+    // but actually the LED is on; this is because
+    // it is active low on the ESP-01)
+  } else {
+    digitalWrite(LED, HIGH);  // Turn the LED off by making the voltage HIGH
+  }
+
+}
 
 void setup() {
   Serial.begin(115200);
@@ -242,25 +270,63 @@ void setup() {
     return;
   }
 
-  if (!LittleFS.begin(true)) {
-    Serial.println("An Error has occurred while mounting LittleFS");
-    return;
-  }
   // 初始化WiFi连接
   connectToWiFi();
+
+  // 初始化MQTT连接
+  // client.setServer(mqtt_server, mqtt_port);
+  // client.setCallback(callback);
 }
 
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (client.connect(clientId.c_str(),mqtt_user,mqtt_password)) {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      client.publish("test", "hello world");
+      // ... and resubscribe
+      client.subscribe("inTopic");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
 
 void loop() {
+
+  //   if (!client.connected()) {
+  //   reconnect();
+  // }
+  // client.loop();
+  // unsigned long now = millis();
+  // if (now - lastMsg > 2000) {
+  //   lastMsg = now;
+  //   ++value;
+  //   snprintf (msg, MSG_BUFFER_SIZE, "hello world #%ld", value);
+  //   Serial.print("Publish message: ");
+  //   Serial.println(msg);
+  //   client.publish("test", msg);
+  // }
+  
   if (!digitalRead(PLAY)) {
     delay(5);//防抖
     if (!digitalRead(PLAY)) 
     {
         if (key1 == 0) {
           //getTest();
-          postTest();
+          //postTest();
           //String audioUrl = sendAudioToServerAndGetUrl(); // 发送音频到服务器并获取URL
-          //play();
+          play();
           key1 = 1;
         }
     }
