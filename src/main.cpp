@@ -16,6 +16,8 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <base64.h> 
+#include <FS.h>
+#include <SPIFFS.h> 
 
 SdFs sd;      // sd卡
 FsFile file;  // 录音文件
@@ -45,7 +47,8 @@ int16_t playData[2048];   //发往I2S的缓冲区
 // WiFi配置
 const char *ssid = "二楼";
 const char *password = "1234567890";
-
+// const char *ssid = "14pro";
+// const char *password = "1234567890";
 
 // 服务器配置
 const char *serverUrl = "http://139.155.158.174:8001/api/audio/";
@@ -55,6 +58,8 @@ const char *serverUrl = "http://139.155.158.174:8001/api/audio/";
 WiFiClient wifiClient;
 
 void connectToWiFi() {
+    Serial.println(ssid);
+    Serial.println(password);
     Serial.println("Connecting to WiFi...");
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) {
@@ -62,40 +67,6 @@ void connectToWiFi() {
       Serial.println("Connecting to WiFi...");
     }
     Serial.println("Connected to WiFi");
-}
-
-String sendAudioToServerAndGetUrl() {
-    // 打开音频文件
-    file = sd.open(filename, O_READ);
-    if (!file) {
-        Serial.println("Error opening audio file");
-        return "";
-    }
-
-
-    HTTPClient http;
-    Serial.println("init HTTP");
-    http.begin(wifiClient, serverUrl);
-    http.addHeader("content-type", "multipart/form-data");
-
-    int bytesRead;
-    uint8_t buffer[128];
-    bytesRead = file.readBytes((char*)buffer, sizeof(buffer));
-    Serial.println("Sending data...1");
-    if (bytesRead > 0) {
-        Serial.println("Sending data...2");
-        http.POST(buffer, bytesRead);
-      
-    }
-    delay(100);  
-
-    file.close();
-    String serverResponse = http.getString();
-    Serial.println("Server Response: " + serverResponse);
-    http.end();
-    Serial.println("HTTP close");
-
-    return serverResponse;
 }
 
 void play()
@@ -141,6 +112,7 @@ void play()
 void record()
 {
   //删除并创建文件
+
   sd.remove(filename);
   file = sd.open(filename, O_WRITE|O_CREAT);
   if(!file)
@@ -204,87 +176,56 @@ void getTest(){
 
 }
 
-void postTest(){
+void postTest() {
+
+  // 打开WAV文件
   file = sd.open(filename, O_READ);
   if(!file)
   {
     Serial.println("crate file error");
     return;
   }
-  
-  const size_t bufferSize = 1024;
+  // 获取WAV文件大小
+  size_t wavFileSize = file.size();
+
+  // 读取WAV文件内容到数组
+  // 读取 WAV 文件内容到数组
+uint8_t* wavData = new uint8_t[wavFileSize];
+size_t bytesRead = file.read(wavData, wavFileSize);
+file.close();
+
+// 将二进制数据进行 Base64 编码
+String base64WavData = base64::encode(wavData, wavFileSize);
+delete[] wavData;
+
+// 构建请求数据
+String data = "{\"user_id\":\"wxl\",\"audio_type\":\"WAV\",\"audio_file\":\"" + base64WavData + "\"}";
+
+// 开始 HTTP 请求
 HTTPClient http;
+http.begin(serverUrl);
+http.addHeader("Content-Type", "application/json");
 
-  // Specify the server endpoint
-  http.begin(serverUrl);
+// 发送请求数据
+int httpCode = http.POST(data);
 
-  // Set the Content-Type header to indicate the type of data being sent
-  http.addHeader("Content-Type", "multipart/form-data","boundary=--------------------------507255100017623358517301");
+// 处理服务器响应
+if (httpCode > 0) {
+  Serial.printf("HTTP POST request status code: %d\n", httpCode);
 
-  // Allocate memory for a buffer to read chunks of the file
-  uint8_t *buffer = (uint8_t *)malloc(bufferSize);
-
-  if (!buffer) {
-    Serial.println("Failed to allocate memory");
-    http.end();
-    return;
+  if (httpCode == HTTP_CODE_OK) {
+    String response = http.getString();
+    Serial.println("Server response: " + response);
   }
-
-  // Read and send the file in chunks
-  size_t bytesRead;
-  while ((bytesRead = file.read(buffer, bufferSize)) > 0) {
-    // Send the chunk to the server
-    int httpCode = http.POST(buffer, bytesRead);
-
-    // Check for a successful response
-  if (httpCode > 0) {
-    Serial.printf("[HTTP] POST request successful, response code: %d\n", httpCode);
-    String payload = http.getString();
-    Serial.println("Response payload: " + payload);
-  } else {
-    Serial.printf("[HTTP] POST request failed, error: %s\n", http.errorToString(httpCode).c_str());
-  }
-  }
-
-  // End the HTTP connection
-  http.end();
-
-  // Free the allocated memory
-  free(buffer);
-
-  
-
-  
+} else {
+  Serial.printf("HTTP POST request failed, error: %s\n", http.errorToString(httpCode).c_str());
 }
 
-void sendFileToServer() {
-  // Create an HTTPClient object
-  HTTPClient http;
-
-  // Specify the server endpoint
-  http.begin(serverUrl);
-
-  // Set the Content-Type header to indicate the type of data being sent
-  http.addHeader("Content-Type", "multipart/form-data");
-
-  // Create a buffer for reading file content
-  uint8_t buffer[512];
-
-  // Send the POST request with the file content as payload
-  int httpCode = http.POST( buffer, file.size());
-
-  // Check for a successful response
-  if (httpCode > 0) {
-    Serial.printf("[HTTP] POST request successful, response code: %d\n", httpCode);
-    String payload = http.getString();
-    Serial.println("Response payload: " + payload);
-  } else {
-    Serial.printf("[HTTP] POST request failed, error: %s\n", http.errorToString(httpCode).c_str());
-  }
-
-  // End the HTTP connection
-  http.end();
+// 关闭 HTTP 连接
+http.end();
 }
+
+
 
 void setup() {
   Serial.begin(115200);
@@ -301,9 +242,12 @@ void setup() {
     return;
   }
 
+  if (!LittleFS.begin(true)) {
+    Serial.println("An Error has occurred while mounting LittleFS");
+    return;
+  }
   // 初始化WiFi连接
   connectToWiFi();
-
 }
 
 
@@ -316,7 +260,7 @@ void loop() {
           //getTest();
           postTest();
           //String audioUrl = sendAudioToServerAndGetUrl(); // 发送音频到服务器并获取URL
-          play();
+          //play();
           key1 = 1;
         }
     }
