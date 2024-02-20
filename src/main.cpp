@@ -40,7 +40,7 @@ const char filename[] = "/my.wav";
 const int record_time = 5;  // second录音5秒
 //每秒的数据量就是 1（通道）* 44100 采样率（样本/秒）* 2（16位）（字节/样本）= 88200 字节/秒
 const int waveDataSize = record_time * 88200;
-int32_t communicationData[1024];     //接收缓冲区
+int32_t communicationData[1024];    //接收缓冲区 然而，int32_t 类型的元素的大小是 4 字节（32 位）。数组的总大小是 1024 * 4 = 4096 字节。
 char partWavData[1024];
 
 
@@ -66,6 +66,17 @@ unsigned long lastMsg = 0;
 #define MSG_BUFFER_SIZE	(50)
 char msg[MSG_BUFFER_SIZE];
 int value = 0;
+
+
+bool sendOver=1;//发送完成标志位
+bool recOver=0;//接受完成标志位
+bool speakOut;//0代表对外讲话，1代表收听
+int32_t *samples_32bit;//读出来的原始32位数据，长度128
+int16_t *samples_16bit;//转换后的16位数据，长度128
+uint8_t *samples_8bit ;//转换后的8位数据，长度128
+int16_t *recive_16bit;//接收后转换的16位数据，长度128
+int16_t *output_16bit;//发送给扬声器的16位数据，长度256，因为传入数据是双声道所以*2
+
 
 void connectToWiFi() {
     Serial.println(ssid);
@@ -135,7 +146,16 @@ void record()
   header.riffSize = waveDataSize + 44 - 8;
   header.dataSize = waveDataSize;
   file.write(&header, 44);
-
+  //.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,设置了左右声道分离
+  //测试只更改only right时会导致声音变快，数据损失 
+  /*
+  typedef enum {
+    I2S_CHANNEL_FMT_RIGHT_LEFT,         /*!< Separated left and right channel  正常
+    I2S_CHANNEL_FMT_ALL_RIGHT,          /*!< Load right channel data in both two channels  正常
+    I2S_CHANNEL_FMT_ALL_LEFT,           /*!< Load left channel data in both two channels 正常
+    I2S_CHANNEL_FMT_ONLY_RIGHT,         /*!< Only load data in right channel (mono mode)  声音变快
+    I2S_CHANNEL_FMT_ONLY_LEFT,          /*!< Only load data in left channel (mono mode) 无声音
+  */
   if(!mi.InitInput(I2S_BITS_PER_SAMPLE_32BIT, ICS_SCK, ICS_WS, ICS_SD))
   {
     Serial.println("init i2s error");
@@ -151,10 +171,11 @@ void record()
     for(int i=0;i<sz/4;i++)
     {
       communicationData[i] *= 20;  //提高声音
-      if(i%2 == 0)   //这里获取到的数据第一个Int32是右声道
+      if(i%2 == 0)  //这里获取到的数据第一个Int32是左声道 是左声道的样本。第二个Int32是右声道 是右声道的样本。
       {
-          partWavData[i] = p[4*i + 2];
-          partWavData[i + 1] = p[4*i + 3];
+        //I2S_BITS_PER_SAMPLE_32BIT下四个字节是一个数据位 在偶数条件下 p[4*i] 和 p[4*i + 1] 低位噪声p[4*i + 2] 和 p[4*i + 3]高位信息 
+          partWavData[i] = p[4*i + 2 ];
+          partWavData[i+1] = p[4*i + 3];
       }
     }
     file.write((const byte*)partWavData, 1024);
@@ -163,76 +184,6 @@ void record()
   digitalWrite(LED, HIGH); 
   Serial.println("recordfinish");
   ESP.restart();//重启
-}
-
-void getTest(){
-  HTTPClient http;
-  http.begin(serverUrl);
-  int httpCode = http.GET();  
-  if(httpCode > 0) {
-            // HTTP header has been send and Server response header has been handled
-            Serial.printf("[HTTP] GET... code: %d\n", httpCode);
-
-            // file found at server
-            if(httpCode == HTTP_CODE_OK) {
-                String payload = http.getString();
-                Serial.println(payload);
-            }
-        } else {
-            Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
-        }
-
-        http.end();
-
-}
-
-void postTest() {
-
-  // 打开WAV文件
-  file = sd.open(filename, O_READ);
-  if(!file)
-  {
-    Serial.println("crate file error");
-    return;
-  }
-  // 获取WAV文件大小
-  size_t wavFileSize = file.size();
-
-  // 读取WAV文件内容到数组
-  // 读取 WAV 文件内容到数组
-uint8_t* wavData = new uint8_t[wavFileSize];
-size_t bytesRead = file.read(wavData, wavFileSize);
-file.close();
-
-// 将二进制数据进行 Base64 编码
-String base64WavData = base64::encode(wavData, wavFileSize);
-delete[] wavData;
-
-// 构建请求数据
-String data = "{\"user_id\":\"wxl\",\"audio_type\":\"WAV\",\"audio_file\":\"" + base64WavData + "\"}";
-
-// 开始 HTTP 请求
-HTTPClient http;
-http.begin(serverUrl);
-http.addHeader("Content-Type", "application/json");
-
-// 发送请求数据
-int httpCode = http.POST(data);
-
-// 处理服务器响应
-if (httpCode > 0) {
-  Serial.printf("HTTP POST request status code: %d\n", httpCode);
-
-  if (httpCode == HTTP_CODE_OK) {
-    String response = http.getString();
-    Serial.println("Server response: " + response);
-  }
-} else {
-  Serial.printf("HTTP POST request failed, error: %s\n", http.errorToString(httpCode).c_str());
-}
-
-// 关闭 HTTP 连接
-http.end();
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -264,20 +215,40 @@ void setup() {
   delay(500);
 
   // 初始化SD卡
-  if(!sd.begin(SdSpiConfig(5, DEDICATED_SPI, 18000000)))
+  // if(!sd.begin(SdSpiConfig(5, DEDICATED_SPI, 18000000)))
+  // {
+  //   Serial.println("init sd card error");
+  //   return;
+  // }
+  // 初始化I2S
+  
+  samples_16bit = (int16_t *)malloc(sizeof(int16_t) * 128);
+  samples_8bit =  (uint8_t *)malloc(sizeof(uint8_t) * 128);
+  if(!mi.InitInput(I2S_BITS_PER_SAMPLE_32BIT, ICS_SCK, ICS_WS, ICS_SD))
   {
-    Serial.println("init sd card error");
+    Serial.println("init i2s error");
     return;
   }
-
   // 初始化WiFi连接
   connectToWiFi();
 
   // 初始化MQTT连接
-  // client.setServer(mqtt_server, mqtt_port);
-  // client.setCallback(callback);
+   client.setServer(mqtt_server, mqtt_port);
+   client.setCallback(callback);
 }
 
+bool  BtnisPressed(void)//按键是否按下
+{
+  bool key=digitalRead(RECORD);
+  if(1==key)
+  {
+    return 0;
+  }
+  else
+  {
+    return 1 ;
+  }
+}
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
@@ -289,7 +260,7 @@ void reconnect() {
     if (client.connect(clientId.c_str(),mqtt_user,mqtt_password)) {
       Serial.println("connected");
       // Once connected, publish an announcement...
-      client.publish("test", "hello world");
+      //client.publish("test", "hello world");
       // ... and resubscribe
       client.subscribe("inTopic");
     } else {
@@ -304,11 +275,11 @@ void reconnect() {
 
 void loop() {
 
-  //   if (!client.connected()) {
-  //   reconnect();
-  // }
-  // client.loop();
-  // unsigned long now = millis();
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+  //unsigned long now = millis();
   // if (now - lastMsg > 2000) {
   //   lastMsg = now;
   //   ++value;
@@ -317,43 +288,50 @@ void loop() {
   //   Serial.println(msg);
   //   client.publish("test", msg);
   // }
-  
-  if (!digitalRead(PLAY)) {
-    delay(5);//防抖
-    if (!digitalRead(PLAY)) 
+if(BtnisPressed())//按下按键发射数据
+  {
+    //Serial.println("Record_Pressed");
+    digitalWrite(LED, LOW);
+    speakOut=0;
+    int samples_read = mi.I2Sread(samples_16bit,128);//读取数据
+    mi.covert_bit(samples_16bit,samples_8bit,samples_read);//发送时转换为8位
+   // Serial.println("recordfinish");
+    //sendData(samples_8bit,samples_read);//发射数据
+    //samples_read 为128
+    boolean istrans = client.publish("test", samples_8bit,samples_read);
+    if(istrans)
     {
-        if (key1 == 0) {
-          //getTest();
-          //postTest();
-          //String audioUrl = sendAudioToServerAndGetUrl(); // 发送音频到服务器并获取URL
-          play();
-          key1 = 1;
-        }
+      Serial.println("publish finish");
     }
+    else
+    {
+      Serial.println("publish failed");
+    }
+    
   }
-  else 
+  else//接收数据，接受部分在回调函数中
   {
-    delay(5);
-    key1=0;
+    digitalWrite(LED,HIGH);//发射时开灯
+    // delay(28);//经过一段延时再判断，接收数据并且播放也需要时间
+    // speakOut=1;
+    // if(recOver)
+    // {
+    //   recOver=0;
+    //   if(digitalRead(LED))//接受数据时闪烁LED
+    //   {
+    //       digitalWrite(LED,LOW);
+    //   }
+    //   else
+    //   {
+    //       digitalWrite(LED,HIGH);
+    //   }
+    // }
+    // else
+    // {
+    //   digitalWrite(LED,LOW);//没有接收到消息，也没有发射，关灯
+    //   i2s_zero_dma_buffer(SPK_I2S_PORT);//清空DMA中缓存的数据，你可以尝试一下不清空（注释这行）是什么效果
+    // }
   }
-
-
-  if (!digitalRead(RECORD)) {
-      delay(5);//防抖
-      if (!digitalRead(RECORD)) {
-        if (key2 == 0) {
-          record();
-          //sendAudioToTencentCloud(); // 发送音频到腾讯云
-          key2 = 1;
-        }
-      }
-  }
-  else 
-  {
-    delay(5);
-    key2=0;  
-  }
-
 
 }
 

@@ -34,6 +34,9 @@ bool MyI2S::InitInput(i2s_bits_per_sample_t BPS,
     Serial.println("i2s set pin failed");
     return false;
   }
+
+  samples_32bit = (int32_t *)malloc(sizeof(int32_t) * 128);
+
   return true;
 }
 
@@ -130,7 +133,37 @@ size_t MyI2S::Read(char* data, int numData)
   i2s_read(I2S_NUM_0, (void*)data, numData, &recvSize, portMAX_DELAY);
   return recvSize;
 }
-
+int MyI2S::I2Sread(int16_t *samples, int count)// read from i2s
+{
+    size_t bytes_read = 0;
+    if (count>128)
+    {
+        count = 128;//最少读取128
+    }
+    
+    i2s_read(I2S_NUM_0, (char *)samples_32bit, sizeof(int32_t) * count, &bytes_read, portMAX_DELAY);
+    //Serial.println("read one");
+    int samples_read = bytes_read / sizeof(int32_t);
+    for (int i = 0; i < samples_read; i++)
+    {
+      //Serial.println("start to convert...1");
+        int32_t temp = samples_32bit[i] >> 11;
+        //Serial.println("start to convert....2");
+        //samples[i] = (temp > INT16_MAX) ? INT16_MAX : (temp < -INT16_MAX) ? -INT16_MAX : (int16_t)temp;
+        samples[i] = (temp > INT16_MAX) ? INT16_MAX : (temp < INT16_MIN) ? INT16_MIN : (int16_t)temp;
+        //Serial.println("start to convert....3");
+    }
+    //delete[] samples_32bit;
+    return samples_read;
+}
+void MyI2S::covert_bit(int16_t *temp_samples_16bit,uint8_t*temp_samples_8bit,uint8_t len )//16位数据转成8位
+{
+  for(uint8_t i=0;i<len;i++)
+  {
+    temp_samples_8bit[i]=(temp_samples_16bit[i] + 32768) >> 8;
+  }
+    
+}
 size_t MyI2S::Write(char* data, int numData)
 {
   size_t sendSize;
