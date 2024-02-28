@@ -133,6 +133,12 @@ size_t MyI2S::Read(char* data, int numData)
   i2s_read(I2S_NUM_0, (void*)data, numData, &recvSize, portMAX_DELAY);
   return recvSize;
 }
+size_t MyI2S::Read(uint32_t* data, int numData)
+{
+  size_t recvSize;
+  i2s_read(I2S_NUM_0, (char*)data, numData, &recvSize, portMAX_DELAY);
+  return recvSize;
+}
 int MyI2S::I2Sread(int16_t *samples, int count)// read from i2s
 {
     size_t bytes_read = 0;

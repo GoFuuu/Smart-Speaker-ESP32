@@ -18,7 +18,7 @@
 #include <base64.h> 
 #include <FS.h>
 #include <SPIFFS.h> 
-
+#include <cstdint>
 SdFs sd;      // sd卡
 FsFile file;  // 录音文件
 
@@ -40,16 +40,17 @@ const char filename[] = "/my.wav";
 const int record_time = 5;  // second录音5秒
 //每秒的数据量就是 1（通道）* 44100 采样率（样本/秒）* 2（16位）（字节/样本）= 88200 字节/秒
 const int waveDataSize = record_time * 88200;
-int32_t communicationData[1024];    //接收缓冲区 然而，int32_t 类型的元素的大小是 4 字节（32 位）。数组的总大小是 1024 * 4 = 4096 字节。
-char partWavData[1024];
-
+int32_t communicationData[4096];    //接收缓冲区 然而，int32_t 类型的元素的大小是 4 字节（32 位）。数组的总大小是 1024 * 4 = 4096 字节。
+char partWavData[4096];
+int32_t* rawData;
+uint8_t* wavData;
 
 int16_t buffer[1024];        //接收缓冲区
 int16_t playData[2048];   //发往I2S的缓冲区
 
 // WiFi配置
-const char *ssid = "二楼";
-const char *password = "1234567890";
+const char *ssid = "0329";
+const char *password = "C02329DD";
 // const char *ssid = "14pro";
 // const char *password = "1234567890";
 
@@ -59,9 +60,11 @@ const char* mqtt_server = "139.155.158.174";
 unsigned int mqtt_port = 1883;
 const char *mqtt_user = "ubuntu";
 const char *mqtt_password = "1";
+const char *mqtt_topic = "audio_data_topic";
 // 其他定义
 WiFiClient wifiClient;
 PubSubClient client(wifiClient);
+
 unsigned long lastMsg = 0;
 #define MSG_BUFFER_SIZE	(50)
 char msg[MSG_BUFFER_SIZE];
@@ -70,12 +73,15 @@ int value = 0;
 
 bool sendOver=1;//发送完成标志位
 bool recOver=0;//接受完成标志位
-bool speakOut;//0代表对外讲话，1代表收听
+bool speakOut=0;//0代表对外讲话，1代表收听
+int32_t pubTimes;//发送次数
 int32_t *samples_32bit;//读出来的原始32位数据，长度128
 int16_t *samples_16bit;//转换后的16位数据，长度128
 uint8_t *samples_8bit ;//转换后的8位数据，长度128
 int16_t *recive_16bit;//接收后转换的16位数据，长度128
 int16_t *output_16bit;//发送给扬声器的16位数据，长度256，因为传入数据是双声道所以*2
+
+
 
 
 void connectToWiFi() {
@@ -165,8 +171,43 @@ void record()
   Serial.println("recordstart");
    digitalWrite(LED, LOW);
 
-  for (int j = 0; j < waveDataSize/1024; ++j) {
-    auto sz = mi.Read((char*)communicationData, 4096);
+// 1024传输一次
+
+  // for (int j = 0; j < waveDataSize/1024; ++j) {
+  //   auto sz = mi.Read((char*)communicationData, 4096);
+  //   char*p =(char*)(communicationData);
+  //   for(int i=0;i<sz/4;i++)
+  //   {
+  //     communicationData[i] *= 20;  //提高声音
+  //     if(i%2 == 0)  //这里获取到的数据第一个Int32是左声道 是左声道的样本。第二个Int32是右声道 是右声道的样本。
+  //     {
+  //       //I2S_BITS_PER_SAMPLE_32BIT下四个字节是一个数据位 在偶数条件下 p[4*i] 和 p[4*i + 1] 低位噪声p[4*i + 2] 和 p[4*i + 3]高位信息 
+  //         partWavData[i] = p[4*i + 2 ];
+  //         partWavData[i+1] = p[4*i + 3];
+  //     }
+  //   }
+  //   // for (int i = 0; i < 8; ++i) {
+  //   //   //将1024的partWavData切8段发送到服务器
+      
+  //   //    for (int j = 0; j < 128; j++) {
+  //   //     tempWavData[j] = partWavData[i * 128 + j];
+      
+  //   // }
+  //    boolean istrans = client.publish(mqtt_topic, (const byte*)communicationData, 4096);
+  //   if(istrans)
+  //   {
+  //     Serial.println("publish finish");
+  //   }
+  //   else
+  //   {
+  //     Serial.println("publish failed");
+  //   }  
+  //  //memcpy(bigBuffer + j * 1024, partWavData, 1024);
+  //   file.write((const byte*)partWavData, 1024);
+
+  // }
+    for (int j = 0; j < waveDataSize/4096; ++j) {
+    auto sz = mi.Read((char*)communicationData, 4096*4);
     char*p =(char*)(communicationData);
     for(int i=0;i<sz/4;i++)
     {
@@ -178,8 +219,19 @@ void record()
           partWavData[i+1] = p[4*i + 3];
       }
     }
-    file.write((const byte*)partWavData, 1024);
+
+     boolean istrans = client.publish(mqtt_topic, (const byte*)partWavData, 4096);
+    if(istrans)
+    {
+      Serial.println("publish finish");
+    }
+    else
+    {
+      Serial.println("publish failed");
+    }  
+    file.write((const byte*)partWavData, 4096);
   }
+  
   file.close();
   digitalWrite(LED, HIGH); 
   Serial.println("recordfinish");
@@ -206,37 +258,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 }
 
-void setup() {
-  Serial.begin(115200);
-  pinMode(PLAY, INPUT_PULLUP);//定义按钮1
-  pinMode(RECORD, INPUT_PULLUP);
-  pinMode(LED,OUTPUT);
-  digitalWrite(LED, HIGH);
-  delay(500);
-
-  // 初始化SD卡
-  // if(!sd.begin(SdSpiConfig(5, DEDICATED_SPI, 18000000)))
-  // {
-  //   Serial.println("init sd card error");
-  //   return;
-  // }
-  // 初始化I2S
-  
-  samples_16bit = (int16_t *)malloc(sizeof(int16_t) * 128);
-  samples_8bit =  (uint8_t *)malloc(sizeof(uint8_t) * 128);
-  if(!mi.InitInput(I2S_BITS_PER_SAMPLE_32BIT, ICS_SCK, ICS_WS, ICS_SD))
-  {
-    Serial.println("init i2s error");
-    return;
-  }
-  // 初始化WiFi连接
-  connectToWiFi();
-
-  // 初始化MQTT连接
-   client.setServer(mqtt_server, mqtt_port);
-   client.setCallback(callback);
-}
-
 bool  BtnisPressed(void)//按键是否按下
 {
   bool key=digitalRead(RECORD);
@@ -249,6 +270,7 @@ bool  BtnisPressed(void)//按键是否按下
     return 1 ;
   }
 }
+
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
@@ -273,65 +295,80 @@ void reconnect() {
   }
 }
 
+void setup() {
+  Serial.begin(115200);
+  pinMode(PLAY, INPUT_PULLUP);//定义按钮1
+  pinMode(RECORD, INPUT_PULLUP);
+  pinMode(LED,OUTPUT);
+  digitalWrite(LED, HIGH);
+  delay(500);
+
+  // 初始化SD卡
+  if(!sd.begin(SdSpiConfig(5, DEDICATED_SPI, 18000000)))
+  {
+    Serial.println("init sd card error");
+    return;
+  }
+  // 初始化I2S
+  
+  // samples_16bit = (int16_t *)malloc(sizeof(int16_t) * 128);
+  // samples_8bit =  (uint8_t *)malloc(sizeof(uint8_t) * 128);
+  // wavData = (uint8_t *)malloc(sizeof(uint8_t) * 128);
+  // rawData = (int32_t *)malloc(sizeof(int32_t) * 128);
+  // bigBuffer = (char *)malloc(sizeof(char) * 4096);
+
+  if(!mi.InitInput(I2S_BITS_PER_SAMPLE_32BIT, ICS_SCK, ICS_WS, ICS_SD))
+  {
+    Serial.println("init i2s error");
+    return;
+  }
+  
+  // 初始化WiFi连接
+  connectToWiFi();
+
+  // 初始化MQTT连接
+   client.setServer(mqtt_server, mqtt_port);
+   client.setCallback(callback);
+   boolean temp= client.setBufferSize(5100);
+    if(temp)
+    {
+      Serial.println("setBufferSize success");
+    }
+    else
+    {
+      Serial.println("setBufferSize failed");
+    }
+}
+
 void loop() {
 
   if (!client.connected()) {
     reconnect();
   }
   client.loop();
-  //unsigned long now = millis();
-  // if (now - lastMsg > 2000) {
-  //   lastMsg = now;
-  //   ++value;
-  //   snprintf (msg, MSG_BUFFER_SIZE, "hello world #%ld", value);
-  //   Serial.print("Publish message: ");
-  //   Serial.println(msg);
-  //   client.publish("test", msg);
-  // }
+ 
 if(BtnisPressed())//按下按键发射数据
   {
     //Serial.println("Record_Pressed");
-    digitalWrite(LED, LOW);
-    speakOut=0;
-    int samples_read = mi.I2Sread(samples_16bit,128);//读取数据
-    mi.covert_bit(samples_16bit,samples_8bit,samples_read);//发送时转换为8位
-   // Serial.println("recordfinish");
-    //sendData(samples_8bit,samples_read);//发射数据
-    //samples_read 为128
-    boolean istrans = client.publish("test", samples_8bit,samples_read);
-    if(istrans)
-    {
-      Serial.println("publish finish");
-    }
-    else
-    {
-      Serial.println("publish failed");
-    }
-    
+  //   int samples_read = mi.I2Sread(samples_16bit,128);//读取数据
+  //   mi.covert_bit(samples_16bit,samples_8bit,samples_read);//发送时转换为8位
+  //  // Serial.println("recordfinish");
+  //   //sendData(samples_8bit,samples_read);//发射数据
+  //   //samples_read 为128
+  //   boolean istrans = client.publish(mqtt_topic, samples_8bit, samples_read);
+  
+  delay(5);
+if(BtnisPressed())
+{
+  digitalWrite(LED, LOW);
+  record();
+}
   }
   else//接收数据，接受部分在回调函数中
   {
     digitalWrite(LED,HIGH);//发射时开灯
-    // delay(28);//经过一段延时再判断，接收数据并且播放也需要时间
-    // speakOut=1;
-    // if(recOver)
-    // {
-    //   recOver=0;
-    //   if(digitalRead(LED))//接受数据时闪烁LED
-    //   {
-    //       digitalWrite(LED,LOW);
-    //   }
-    //   else
-    //   {
-    //       digitalWrite(LED,HIGH);
-    //   }
-    // }
-    // else
-    // {
-    //   digitalWrite(LED,LOW);//没有接收到消息，也没有发射，关灯
-    //   i2s_zero_dma_buffer(SPK_I2S_PORT);//清空DMA中缓存的数据，你可以尝试一下不清空（注释这行）是什么效果
-    // }
   }
 
 }
+
 

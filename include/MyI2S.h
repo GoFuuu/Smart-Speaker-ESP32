@@ -33,6 +33,7 @@ public:
   bool InitDacOutput(i2s_bits_per_sample_t BPS);
 
   size_t Read(char* data, int numData);
+  size_t Read(uint32_t* data, int numData);
   int I2Sread(int16_t *samples, int count);
   void covert_bit(int16_t *temp_samples_16bit,uint8_t*temp_samples_8bit,uint8_t len );//16位数据转成8位
   size_t Write(char* data, int numData);
